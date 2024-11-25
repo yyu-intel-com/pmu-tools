@@ -74,8 +74,18 @@ def thread_map():
                                        UNInt64("pid"),
                                        String("comm", 16))))
 
-def ignore():
-    return Bytes("data", lambda ctx: ctx.size - 8)
+def id_index():
+    return Struct("id_index",
+                  UNInt64("nr"),
+                  Array(lambda ctx: ctx.nr,
+                     Struct("id_index_entry",
+                        UNInt64("id"),
+                        UNInt64("idx"),
+                        UNInt64("cpu"),
+                        UNInt64("tid"))))
+
+def as_is():
+    return Embedded(Struct("data", Bytes("data", lambda ctx: ctx.size - 8)))
 
 def throttle(name):
     return Struct(name,
@@ -165,8 +175,8 @@ def event():
                                ABI_64 = 2),
                           Array(lambda ctx: hweight64(ctx),
                                 UNInt64("reg")))),
-                Anchor("end_event"),
-                Padding(lambda ctx: max(0, ctx.size - ctx.end_event))))
+                Anchor("anchor_end_event"),
+                Padding(lambda ctx: max(0, ctx.size - ctx.anchor_end_event))))
 
 def get_attr_list(ctx):
     return ctx._._.attrs.perf_file_attr.f_attr
@@ -182,8 +192,8 @@ def has_sample_id_all(ctx):
 # when sample_id_all is not supported, we may
 # not look up the right one (perf.data limitation)
 def lookup_event_attr(ctx):
-    if "end_id" in ctx and ctx.end_id:
-        idx = ctx.end_id
+    if "anchor_end_id" in ctx and ctx.anchor_end_id:
+        idx = ctx.anchor_end_id
     elif 'id' in ctx and ctx['id']:
         idx = ctx['id']
     else:
@@ -214,6 +224,8 @@ def perf_event_header():
                                 KSYMBOL         = 17,
                                 BPF_EVENT       = 18,
                                 CGROUP          = 19,
+                                TEXT_POKE       = 20,
+                                AUX_OUTPUT_HW_ID= 21,
                                 HEADER_ATTR     = 64,
                                 HEADER_EVENT_TYPE = 65,
                                 TRACING_DATA    = 66,
@@ -231,7 +243,8 @@ def perf_event_header():
                                 EVENT_UPDATE    = 78,
                                 TIME_CONV       = 79,
                                 HEADER_FEATURE  = 80,
-                                COMPRESSED      = 81),
+                                COMPRESSED      = 81,
+                                FINISHED_INIT   = 82),
                            Embedded(BitStruct(None,
                                               Padding(1),
                                               Enum(BitField("cpumode", 7),
@@ -248,8 +261,8 @@ def perf_event_header():
                                               Padding(5))),
                            UNInt16("size"),
                            If(has_sample_id_all,
-                                 Pointer(lambda ctx: ctx.start + ctx.size - 8,
-                                   UNInt64("end_id"))),
+                                 Pointer(lambda ctx: ctx.anchor_start + ctx.size - 8,
+                                   UNInt64("anchor_end_id"))),
                            Value("attr", lookup_event_attr)))
 
 def mmap():
@@ -259,13 +272,13 @@ def mmap():
                   UNInt64("addr"),
                   UNInt64("len"),
                   UNInt64("pgoff"),
-                  Anchor("start_of_filename"),
+                  Anchor("anchor_start_of_filename"),
                   CString("filename"),
-                  Anchor("end_of_filename"),
+                  Anchor("anchor_end_of_filename"),
                   # hack for now. this shouldn't be needed.
                   If(lambda ctx: True, # XXX
                      Embedded(Pointer(lambda ctx:
-                                      ctx.size + ctx.start -
+                                      ctx.size + ctx.anchor_start -
                                       sample_id_size(ctx),
                                       sample_id()))))
 def mmap2():
@@ -321,9 +334,8 @@ def time_conv():
 
 def perf_event():
     return Struct("perf_event",
-                  Anchor("start"),
+                  Anchor("anchor_start"),
                   perf_event_header(),
-                  Anchor("header_end"),
                   Switch("data",
                            lambda ctx: ctx.type,
                            {
@@ -341,7 +353,7 @@ def perf_event():
                               "EXIT": fork_exit("exit"),
                               "THROTTLE": throttle("throttle"),
                               "UNTHROTTLE": throttle("unthrottle"),
-                              "FINISHED_ROUND": Pass,
+                              "FINISHED_ROUND": as_is(),
                               "FORK": fork_exit("fork"),
                               "READ": Embedded(Struct("read_event",
                                                       SNInt32("pid"),
@@ -354,42 +366,45 @@ def perf_event():
 
                               # below are the so far not handled ones. Dump their
                               # raw data only
-                              "RECORD_AUX": ignore(),
-                              "AUX": ignore(),
-                              "ITRACE_START": ignore(),
-                              "LOST_SAMPLES": ignore(),
-                              "SWITCH": ignore(),
-                              "SWITCH_CPU_WIDE": ignore(),
-                              "NAMESPACES": ignore(),
-                              "KSYMBOL": ignore(),
-                              "BPF_EVENT": ignore(),
-                              "CGROUP": ignore(),
-                              "HEADER_ATTR": ignore(),
-                              "HEADER_EVENT_TYPE": ignore(),
-                              "TRACING_DATA": ignore(),
-                              "HEADER_BUILD_ID": ignore(),
-                              "ID_INDEX": ignore(),
-                              "AUXTRACE_INFO": ignore(),
-                              "AUXTRACE": ignore(),
-                              "AUXTRACE_ERROR": ignore(),
-                              "CPU_MAP": ignore(),
-                              "STAT": ignore(),
-                              "STAT_ROUND": ignore(),
-                              "EVENT_UPDATE": ignore(),
-                              "HEADER_FEATURE": ignore(),
-                              "COMPRESSED": ignore(),
+                              "RECORD_AUX": as_is(),
+                              "AUX": as_is(),
+                              "ITRACE_START": as_is(),
+                              "LOST_SAMPLES": as_is(),
+                              "SWITCH": as_is(),
+                              "SWITCH_CPU_WIDE": as_is(),
+                              "NAMESPACES": as_is(),
+                              "KSYMBOL": as_is(),
+                              "BPF_EVENT": as_is(),
+                              "CGROUP": as_is(),
+                              "TEXT_POKE" : as_is(),
+                              "AUX_OUTPUT_HW_ID" : as_is(),
+                              "HEADER_ATTR": as_is(),
+                              "HEADER_EVENT_TYPE": as_is(),
+                              "TRACING_DATA": as_is(),
+                              "HEADER_BUILD_ID": as_is(),
+                              "ID_INDEX":id_index(),
+                              "AUXTRACE_INFO": as_is(),
+                              "AUXTRACE": as_is(),
+                              "AUXTRACE_ERROR": as_is(),
+                              "CPU_MAP": as_is(),
+                              "STAT": as_is(),
+                              "STAT_ROUND": as_is(),
+                              "EVENT_UPDATE": as_is(),
+                              "HEADER_FEATURE": as_is(),
+                              "COMPRESSED": as_is(),
+                              "FINISHED_INIT": as_is(),
                            }),
-                        Anchor("end"),
+                        Anchor("anchor_end"),
                         Padding(lambda ctx:
-                                    ctx.size - (ctx.end - ctx.start)))
+                                    ctx.size - (ctx.anchor_end - ctx.anchor_start)))
 
 def perf_event_seq(attr):
     return GreedyRange(perf_event(attr))
 
-perf_event_attr_sizes = (64, 72, 80, 96, 104)
+perf_event_attr_sizes = (64, 72, 80, 96, 104, 112, 120, 128, 136)
 
 perf_event_attr = Struct("perf_event_attr",
-                         Anchor("start"),
+                         Anchor("anchor_start"),
                          Enum(UNInt32("type"),
                               HARDWARE = 0,
                               SOFTWARE = 1,
@@ -472,20 +487,26 @@ perf_event_attr = Struct("perf_event_attr",
                                             UNInt32("__reserved_2")))),
                          If(lambda ctx: ctx.size >= perf_event_attr_sizes[4],
                             UNInt64("sample_regs_intr")),
-                         Anchor("end"),
-                         Value("perf_event_attr_size",
-                               lambda ctx: ctx.end - ctx.start),
-                         Padding(lambda ctx: ctx.size - ctx.perf_event_attr_size))
+                         If(lambda ctx: ctx.size >= perf_event_attr_sizes[5],
+                            UNInt32("aux_watermark")),
+                         If(lambda ctx: ctx.size >= perf_event_attr_sizes[6],
+                            UNInt32("aux_sample_size")),
+                         If(lambda ctx: ctx.size >= perf_event_attr_sizes[7],
+                            UNInt64("sig_data")),
+                         If(lambda ctx: ctx.size >= perf_event_attr_sizes[8],
+                            UNInt64("config3")),
+                         Anchor("anchor_end"),
+                         Padding(lambda ctx: ctx.size - ctx.anchor_end + ctx.anchor_start))
 
 def pad(l = "len"):
-    return Padding(lambda ctx: ctx[l] - (ctx.offset - ctx.start))
+    return Padding(lambda ctx: ctx[l] - (ctx.anchor_offset - ctx.anchor_start))
 
 def str_with_len(name):
     return Struct(name,
                   UNInt32("len"),
-                  Anchor("start"),
+                  Anchor("anchor_start"),
                   CString(name),
-                  Anchor("offset"),
+                  Anchor("anchor_offset"),
                   pad())
 
 def feature_string(name):
@@ -498,9 +519,9 @@ def feature_string(name):
 def string_list(name, extra = Pass):
     return PrefixedArray(Struct(name,
                                UNInt32("len"),
-                               Anchor("start"),
+                               Anchor("anchor_start"),
                                CString(name),
-                               Anchor("offset"),
+                               Anchor("anchor_offset"),
                                pad(),
                                extra), UNInt32("nr"))
 
@@ -518,16 +539,22 @@ def group_desc():
                                        UNInt32("leader_idx"),
                                        UNInt32("nr_members"))))
 
+def feature_bytes(name):
+    return Struct(name,
+                  UNInt64("offset"),
+                  UNInt64("size"),
+                  Pointer(lambda ctx: ctx.offset, Bytes("data", lambda ctx: ctx.size)))
+
 def build_id():
     return Struct("build_id",
-                  Anchor("start"),
+                  Anchor("anchor_start"),
                   UNInt32("type"),
                   UNInt16("misc"),
                   UNInt16("size"),
                   SNInt32("pid"),
                   HexDumpAdapter(String("build_id", 24)),
                   CString("filename"),
-                  Anchor("offset"),
+                  Anchor("anchor_offset"),
                   pad("size"))
 
 def section_adapter(name, target):
@@ -600,7 +627,35 @@ def perf_features():
                                        pmu_mappings())),
                   If(lambda ctx: ctx._.group_desc,
                      perf_file_section("group_desc",
-                                       group_desc())))
+                                       group_desc())),
+                  If(lambda ctx: ctx._.auxtrace,
+                     feature_bytes("auxtrace")),
+                  If(lambda ctx: ctx._.stat,
+                     feature_bytes("stat")),
+                  If(lambda ctx: ctx._.cache,
+                     feature_bytes("cache")),
+                  If(lambda ctx: ctx._.sample_time,
+                     feature_bytes("sample_time")),
+                  If(lambda ctx: ctx._.mem_tpology,
+                     feature_bytes("mem_tpology")),
+                  If(lambda ctx: ctx._.clock_id,
+                     feature_bytes("clock_id")),
+                  If(lambda ctx: ctx._.dir_format,
+                     feature_bytes("dir_format")),
+                  If(lambda ctx: ctx._.bpf_prog_info,
+                     feature_bytes("bpf_prog_info")),
+                  If(lambda ctx: ctx._.bpf_btf,
+                     feature_bytes("bpf_btf")),
+                  If(lambda ctx: ctx._.compressed,
+                     feature_bytes("compressed")),
+                  If(lambda ctx: ctx._.pmu_caps,
+                     feature_bytes("pmu_caps")),
+                  If(lambda ctx: ctx._.clock_data,
+                     feature_bytes("clock_data")),
+                  If(lambda ctx: ctx._.hybrid_topology,
+                     feature_bytes("hybrid_topology")),
+                  If(lambda ctx: ctx._.cpu_pmu_caps,
+                     feature_bytes("cpu_pmu_caps")),)
 
 def perf_file_section(name, target):
     return Struct(name,
@@ -621,7 +676,7 @@ perf_file_attr = Struct("perf_file_attr",
                                      perf_file_section("ids", id_array))))
 
 perf_event_types = Struct("perf_file_attr",
-                          Anchor("here"),
+                          Anchor("anchor_here"),
                           Padding(lambda ctx: ctx._.size))
 
 perf_data = TunnelAdapter(Bytes("perf_data", lambda ctx: ctx.size),
@@ -657,14 +712,28 @@ perf_file = Struct("perf_file_header",
                              Flag("cpuid"),
                              Flag("cpudesc"),
 
-                             Padding(6),
+                             Flag("clock_id"),
+                             Flag("mem_tpology"),
+                             Flag("sample_time"),
+                             Flag("cache"),
+                             Flag("stat"),
+                             Flag("auxtrace"),
                              Flag("group_desc"),
                              Flag("pmu_mappings"),
 
-                             Padding(256 - 3*8))),
+                             Flag("pmu_caps"),
+                             Flag("hybrid_topology"),
+                             Flag("clock_data"),
+                             Flag("cpu_pmu_caps"),
+                             Flag("compressed"),
+                             Flag("bpf_btf"),
+                             Flag("bpf_prog_info"),
+                             Flag("dir_format"),
+
+                             Padding(256 - 4*8))),
                    Pointer(lambda ctx: ctx.data.offset + ctx.data.size,
                            perf_features()),
-                   Padding(3 * 8))
+)
 
 def get_events(h):
     return h.data.perf_data
